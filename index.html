@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Тест доступа</title>
+<style>
+:root{--bg:#fff;--fg:#111;--mut:#666;--line:#ddd;--ok:#0a7d32;--bad:#c62828;--warn:#b26a00;--btn:#1f6feb}
+@media (prefers-color-scheme:dark){:root{--bg:#111;--fg:#eee;--mut:#999;--line:#333;--ok:#4caf50;--bad:#ef5350;--warn:#ffb74d}}
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:15px/1.4 -apple-system,system-ui,sans-serif}
+h1{font-size:20px;margin:0 0 8px}
+p{margin:6px 0;color:var(--mut)}
+button{font:inherit;font-weight:600;color:#fff;background:var(--btn);border:0;border-radius:10px;padding:12px 18px;margin:10px 8px 10px 0}
+button:disabled{opacity:.5}
+table{width:100%;border-collapse:collapse;margin-top:8px}
+td{padding:6px 4px;border-bottom:1px solid var(--line);vertical-align:top}
+td.r{text-align:right;white-space:nowrap}
+.ok{color:var(--ok);font-weight:600}.bad{color:var(--bad);font-weight:600}.warn{color:var(--warn);font-weight:600}
+#net{font-weight:600;margin-top:8px}
+#sum{width:100%;height:110px;font:12px/1.3 ui-monospace,monospace;margin-top:8px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:6px}
+</style>
+</head>
+<body>
+<h1>Тест доступа к серверам</h1>
+<p>Перед стартом: <b>Wi‑Fi выключен, VPN выключен</b>, работает мобильный интернет. Тест длится 2–5 минут, расход около 45 МБ трафика.</p>
+<button id="go">Старт</button><button id="cp" hidden>Скопировать итог</button>
+<div id="net"></div>
+<table id="t"></table>
+<textarea id="sum" readonly hidden></textarea>
+<script>
+// [id, страна, название, url, режим, байт]
+// режим c = файл с CORS: считаем байты (видно обрыв на ~16 КБ)
+//       o = без CORS: только «скачалось целиком / нет»
+//       p = только «сервер ответил / нет»
+const T=[
+ ['ya','RU','Яндекс (есть ли интернет)','https://ya.ru/favicon.ico','p',0],
+ ['selectel','RU','Selectel Москва','https://speedtest.selectel.ru/10MB','o',10485760],
+ ['cherrySG','SG','Cherry Сингапур','https://speedtest.sg.cherryservers.com/test-10mb','c',2e6],
+ ['contaboSG','SG','Contabo Сингапур','https://sin.speedtest.contabo.net:8080/download?size=2000000','c',2e6],
+ ['melbicomSG','SG','Melbicom Сингапур','https://speedtest-sin.melbicom.net:8080/download?size=2000000','o',2e6],
+ ['fdcSG','SG','FDC Сингапур','https://speedtest.sg.fdcservers.net:8080/download?size=2000000','o',2e6],
+ ['hostkeyHEL','FI','Hostkey Хельсинки','https://spd-fisrv.hostkey.com/files/10mb.bin','o',10485760],
+ ['hostkeyAMS','NL','Hostkey Амстердам','https://spd-nlsrv.hostkey.com/files/10mb.bin','o',10485760],
+ ['cherryAMS','NL','Cherry Амстердам','https://speedtest.nl.cherryservers.com/test-100mb','c',2e6],
+ ['vdsinaAMS','NL','VDSina Амстердам','https://speedtest-nl.vdsina.ru:8080/download?size=2000000','c',2e6],
+ ['unlimitedRS','RS','Unlimited Белград','https://lg.unlimited.rs.prod.hosts.ooklaserver.net:8080/download?size=2000000','c',2e6],
+ ['hosterKZ','KZ','Hoster.kz Алматы','https://alm-speedtest-one.hoster.kz:8080/download?size=2000000','c',2e6],
+ ['linodeSG','SG','Linode Сингапур (контроль)','https://sg-sin-2.speedtest.linode.com/garbage.php?ckSize=1','o',1048576],
+ ['cloudflare','--','Cloudflare (контроль)','https://speed.cloudflare.com/__down?bytes=2000000','c',2e6],
+ ['core','SG','НАШЕ ЯДРО (Linode)','https://ai.robowallet.org/','p',0],
+];
+const $=s=>document.querySelector(s);
+const bust=u=>u+(u.includes('?')?'&':'?')+'r='+Math.random().toString(36).slice(2);
+const mbit=(b,ms)=>(b*8/1e6/(ms/1e3)).toFixed(1);
+const limit=b=>12000+b/500;   // 12 с + 0,5 МБ/с
+
+async function cors(url,want){
+  const ac=new AbortController(),t0=performance.now();let got=0,hdr=false;
+  const tm=setTimeout(()=>ac.abort(),limit(want));
+  try{
+    const r=await fetch(bust(url),{signal:ac.signal,cache:'no-store',credentials:'omit'});
+    hdr=true;const rd=r.body.getReader();
+    while(got<want){const{done,value}=await rd.read();if(done)break;got+=value.length}
+    rd.cancel().catch(()=>{});
+  }catch(e){}
+  clearTimeout(tm);const ms=performance.now()-t0;
+  if(got>=want*0.99)return['OK',mbit(got,ms)];
+  if(!hdr&&got===0)return['НЕТ_СВЯЗИ'];
+  if(got>=8000&&got<=40000)return['РЕЖЕТ_16КБ',(got/1024).toFixed(0)+' КБ'];
+  if(got===0)return['НЕТ_ДАННЫХ'];
+  return['МЕДЛЕННО',(got/1024).toFixed(0)+' КБ'];
+}
+
+async function opaque(url,want){
+  const ac=new AbortController(),t0=performance.now();let hdr=false;
+  const tm=setTimeout(()=>ac.abort(),limit(want));
+  let c=null;try{c=await caches.open('rt')}catch(e){}
+  try{
+    const u=bust(url);
+    const r=await fetch(u,{mode:'no-cors',signal:ac.signal,cache:'no-store',credentials:'omit'});
+    hdr=true;
+    if(!c){clearTimeout(tm);return['ОТВЕЧАЕТ','объём не проверен']}
+    await c.put(u,r);   // ждёт, пока файл скачается целиком
+    await c.delete(u);
+    clearTimeout(tm);const ms=performance.now()-t0;
+    return['OK',mbit(want,ms)];
+  }catch(e){clearTimeout(tm)}
+  return hdr?['ОБРЫВ','начал и встал']:['НЕТ_СВЯЗИ'];
+}
+
+async function ping(url){
+  const ac=new AbortController();const tm=setTimeout(()=>ac.abort(),12000);
+  try{await fetch(bust(url),{mode:'no-cors',signal:ac.signal,cache:'no-store',credentials:'omit'});clearTimeout(tm);return['OK']}
+  catch(e){clearTimeout(tm);return['НЕТ_СВЯЗИ']}
+}
+
+async function info(){
+  const c=navigator.connection;const ct=c?(c.type||'')+' '+(c.effectiveType||''):'';
+  try{
+    const ac=new AbortController();setTimeout(()=>ac.abort(),8000);
+    const j=await (await fetch('https://ipinfo.io/json',{signal:ac.signal,credentials:'omit'})).json();
+    return{cc:j.country||'?',org:j.org||'?',ct};
+  }catch(e){return{cc:'?',org:'?',ct}}
+}
+
+$('#go').onclick=async()=>{
+  $('#go').disabled=true;$('#cp').hidden=true;$('#sum').hidden=true;
+  const tb=$('#t');tb.innerHTML='';$('#net').textContent='';
+  const out=[];
+  for(const[id,cc,name,url,mode,b]of T){
+    const tr=tb.insertRow();tr.insertCell().textContent=cc;tr.insertCell().textContent=name;
+    const v=tr.insertCell();v.className='r';v.textContent='…';
+    const res=mode==='c'?await cors(url,b):mode==='o'?await opaque(url,b):await ping(url);
+    const ok=res[0]==='OK';
+    v.className='r '+(ok?'ok':res[0]==='НЕТ_СВЯЗИ'?'bad':'warn');
+    v.textContent=res[0]+(res[1]?(ok&&mode!=='p'?' '+res[1]+' Мбит/с':' · '+res[1]):'');
+    out.push(id+':'+res[0]+(ok&&res[1]?':'+res[1]:''));
+  }
+  const n=await info();
+  const vpn=n.cc!=='RU'&&n.cc!=='?';
+  $('#net').innerHTML='Сеть: '+n.cc+' · '+n.org+(n.ct.trim()?' · '+n.ct:'')+(vpn?'<br><span class="bad">Это не РФ — выключите VPN и запустите снова.</span>':'');
+  const s='ИТОГ-ТЕЛ: ['+n.cc+' '+n.org+' |'+n.ct+'] '+out.join(' ');
+  $('#sum').value=s;$('#sum').hidden=false;$('#cp').hidden=false;$('#go').disabled=false;$('#go').textContent='Ещё раз';
+};
+$('#cp').onclick=async()=>{
+  const s=$('#sum').value;
+  try{await navigator.clipboard.writeText(s);$('#cp').textContent='Скопировано ✓'}
+  catch(e){$('#sum').select();document.execCommand('copy');$('#cp').textContent='Выделено — скопируйте'}
+};
+</script>
+</body>
+</html>
